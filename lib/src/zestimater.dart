@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
@@ -80,32 +79,26 @@ abstract class Zestimater {
 
   static Future<int> getHomeValueFromUrl(Uri url) async {
     final html = await _fetchHtml(url);
-    if (html == null || html.isEmpty) throw Exception('Failed to fetch HTML.');
+    if (html.isEmpty) throw Exception('Fetched empty HTML.');
 
     // Quick bot-block detection
     if (html.contains('captcha') ||
         html.contains('verify you are a human') ||
         html.contains('Please verify')) {
-      stderr.writeln('Fetched a bot-check page, not the listing HTML.');
       throw Exception('Fetched a bot-check page, not the listing HTML.');
     }
 
     final doc = html_parser.parse(html);
-
-    // --- ADDRESS ---
-    final address = _extractAddress(doc, html);
-
-    // --- ZESTIMATE ---
     final zestimate = _extractZestimate(doc, html);
 
-    if (address == null && zestimate == null) {
-      throw Exception('Failed to extract address or zestimate.');
+    if (zestimate == null) {
+      throw Exception('Failed to extract zestimate.');
     }
 
-    return zestimate as int;
+    return zestimate.toInt();
   }
 
-  static Future<String?> _fetchHtml(Uri url) async {
+  static Future<String> _fetchHtml(Uri url) async {
     final headers = _realisticHeaders();
     final client = http.Client();
     try {
@@ -113,15 +106,12 @@ abstract class Zestimater {
           .get(url, headers: headers)
           .timeout(const Duration(seconds: 20));
       if (resp.statusCode != 200) {
-        stderr.writeln('HTTP ${resp.statusCode} from Zillow.');
-        return null;
+        throw Exception('HTTP ${resp.statusCode} from Zillow.');
       }
 
-      // Try to decode properly; http package already handles gzip.
       return resp.body;
-    } on TimeoutException {
-      stderr.writeln('Timed out fetching $url');
-      return null;
+    } on TimeoutException catch (e) {
+      throw Exception('Timed out fetching $url: $e');
     } finally {
       client.close();
     }
@@ -131,9 +121,8 @@ abstract class Zestimater {
     // You can rotate these if you like; using a current-ish mainstream UA helps.
     // You can also override via env var: UA="..." dart run ...
     final ua =
-        Platform.environment['UA'] ??
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/130.0.0.0 Safari/537.36';
+        'Chrome/130.0.0.0 Safari/537.36';
 
     return {
       'User-Agent': ua,
@@ -144,70 +133,6 @@ abstract class Zestimater {
       'Connection': 'keep-alive',
       // Avoid setting Sec-CH-UA headers from server code—they’re client hints. UA above is enough.
     };
-  }
-
-  static String? _extractAddress(dom.Document doc, String html) {
-    // 1) JSON-LD (most reliable for address fields)
-    final ld = _parseAllJsonLd(doc);
-    for (final obj in ld) {
-      final addr = _findAddressObject(obj);
-      final formatted = _formatAddress(addr);
-      if (formatted != null) return formatted;
-      // Some JSON-LD uses a "name" that contains the full address
-      final name = _dig<String>(obj, ['name']);
-      if (name != null && _looksLikeAddress(name)) return name;
-    }
-
-    // 2) Next.js data blob (id="__NEXT_DATA__")
-    final next = _parseNextData(doc);
-    if (next != null) {
-      final addrObj = _findAddressObject(next);
-      final formatted = _formatAddress(addrObj);
-      if (formatted != null) return formatted;
-
-      // common variants in app data
-      final line1 = _findFirstValueByKeys<String>(next, const [
-        'streetAddress',
-        'line1',
-        'addressLine1',
-      ]);
-      final city = _findFirstValueByKeys<String>(next, const [
-        'addressLocality',
-        'city',
-      ]);
-      final region = _findFirstValueByKeys<String>(next, const [
-        'addressRegion',
-        'state',
-      ]);
-      final zip = _findFirstValueByKeys<String>(next, const [
-        'postalCode',
-        'zipcode',
-        'zip',
-      ]);
-      final maybe = _joinAddress(line1, city, region, zip);
-      if (maybe != null) return maybe;
-    }
-
-    // 3) Zillow's preloaded data scripts (data-zrr-shared-data-key / apollo, sometimes wrapped in <!-- -->)
-    for (final json in _parseAllZillowPreloadJson(doc)) {
-      final addrObj = _findAddressObject(json);
-      final formatted = _formatAddress(addrObj);
-      if (formatted != null) return formatted;
-    }
-
-    // 4) Title fallback (often "1234 Main St, City, ST ZIP | Zillow")
-    final title = doc.querySelector('title')?.text.trim();
-    if (title != null) {
-      final maybe =
-          RegExp(
-            r'^\s*(.+?),\s*Zillow',
-            caseSensitive: false,
-          ).firstMatch(title)?.group(1) ??
-          title.replaceAll('| Zillow', '').trim();
-      if (_looksLikeAddress(maybe)) return maybe;
-    }
-
-    return null;
   }
 
   static num? _extractZestimate(dom.Document doc, String html) {
@@ -256,21 +181,6 @@ abstract class Zestimater {
     return null;
   }
 
-  // ------------------------------ helpers
-
-  static List<Map<String, dynamic>> _parseAllJsonLd(dom.Document doc) {
-    final nodes = doc.querySelectorAll('script[type="application/ld+json"]');
-    final out = <Map<String, dynamic>>[];
-    for (final n in nodes) {
-      final raw = n.text.trim();
-      if (raw.isEmpty) continue;
-      for (final obj in _safeDecodePossiblyArray(raw)) {
-        out.add(obj);
-      }
-    }
-    return out;
-  }
-
   static Map<String, dynamic>? _parseNextData(dom.Document doc) {
     final node = doc.querySelector('#__NEXT_DATA__');
     if (node == null) return null;
@@ -297,130 +207,6 @@ abstract class Zestimater {
       final decoded = _safeDecode(raw);
       if (decoded != null) yield decoded;
     }
-  }
-
-  // Finds first reasonable address object in a large JSON structure.
-  static Map<String, dynamic>? _findAddressObject(dynamic json) {
-    Map<String, dynamic>? best;
-
-    void visit(dynamic node) {
-      if (node is Map<String, dynamic>) {
-        final keys = node.keys.map((k) => k.toLowerCase()).toSet();
-        final hasStreet =
-            keys.contains('streetaddress') ||
-            keys.contains('addressline1') ||
-            keys.contains('line1');
-        final hasCity =
-            keys.contains('addresslocality') || keys.contains('city');
-        final hasRegion =
-            keys.contains('addressregion') || keys.contains('state');
-        final hasZip =
-            keys.contains('postalcode') ||
-            keys.contains('zipcode') ||
-            keys.contains('zip');
-
-        if ((hasStreet && hasCity && hasRegion && hasZip) ||
-            (hasStreet && (hasCity || hasRegion) && (hasZip || hasRegion))) {
-          best ??= node;
-        }
-        node.values.forEach(visit);
-      } else if (node is List) {
-        node.forEach(visit);
-      }
-    }
-
-    visit(json);
-    return best;
-  }
-
-  static String? _formatAddress(Map<String, dynamic>? addr) {
-    if (addr == null) return null;
-
-    String? line1 = _findFirstValueByKeys<String>(addr, const [
-      'streetAddress',
-      'addressLine1',
-      'line1',
-    ]);
-    String? city = _findFirstValueByKeys<String>(addr, const [
-      'addressLocality',
-      'city',
-      'locality',
-    ]);
-    String? region = _findFirstValueByKeys<String>(addr, const [
-      'addressRegion',
-      'state',
-      'region',
-    ]);
-    String? zip = _findFirstValueByKeys<String>(addr, const [
-      'postalCode',
-      'zipcode',
-      'zip',
-    ]);
-
-    // Sometimes address is provided as a single "fullAddress" or "formattedAddress"
-    final single = _findFirstValueByKeys<String>(addr, const [
-      'formattedAddress',
-      'fullAddress',
-    ]);
-    final combined = _joinAddress(line1, city, region, zip);
-    return single ?? combined;
-  }
-
-  static String? _joinAddress(
-    String? line1,
-    String? city,
-    String? region,
-    String? zip,
-  ) {
-    final parts = <String>[];
-    if ((line1 ?? '').trim().isNotEmpty) parts.add(line1!.trim());
-    final cityStateZip = [city, region, zip]
-        .where((s) => (s ?? '').trim().isNotEmpty)
-        .join(', ')
-        .replaceAll(', ,', ',');
-    if (cityStateZip.trim().isNotEmpty) {
-      if (parts.isNotEmpty) {
-        parts.add(cityStateZip.replaceAll(RegExp(r',\s+,'), ','));
-      } else {
-        return cityStateZip;
-      }
-    }
-    return parts.isEmpty ? null : parts.join(', ');
-  }
-
-  static bool _looksLikeAddress(String s) {
-    // Very light heuristic for "123 Main St, City, ST 12345" forms
-    return RegExp(r'\d{2,} .+?, .+?, [A-Z]{2} \d{5}').hasMatch(s) ||
-        RegExp(r'\d{2,} .+?, [A-Z]{2} \d{5}').hasMatch(s);
-  }
-
-  static T? _findFirstValueByKeys<T>(dynamic json, List<String> keys) {
-    final lower = keys.map((e) => e.toLowerCase()).toList();
-
-    T? result;
-    void visit(dynamic node) {
-      if (result != null) return;
-      if (node is Map<String, dynamic>) {
-        for (final k in node.keys) {
-          if (lower.contains(k.toLowerCase())) {
-            final v = node[k];
-            if (v is T) {
-              result = v;
-              return;
-            } else if (v is String && T == String) {
-              result = v as T;
-              return;
-            }
-          }
-        }
-        node.values.forEach(visit);
-      } else if (node is List) {
-        node.forEach(visit);
-      }
-    }
-
-    visit(json);
-    return result;
   }
 
   /// Attempts to extract a numeric value from various formats:
@@ -498,23 +284,10 @@ abstract class Zestimater {
         if (decoded is String) decoded = jsonDecode(decoded);
         if (decoded is Map<String, dynamic>) return decoded;
       } catch (e2) {
-        stderr.writeln('Failed to decode JSON: $e2');
+        throw Exception('Failed to decode JSON: $e2');
       }
     }
-    return null;
-  }
-
-  static List<Map<String, dynamic>> _safeDecodePossiblyArray(String raw) {
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map<String, dynamic>) return [decoded];
-      if (decoded is List) {
-        return decoded.whereType<Map<String, dynamic>>().toList();
-      }
-    } catch (e) {
-      stderr.writeln('Failed to decode JSON-LD: $e');
-    }
-    return const [];
+    throw Exception('Failed to decode JSON.');
   }
 
   static T? _dig<T>(Map<String, dynamic> obj, List<String> path) {
