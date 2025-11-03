@@ -160,10 +160,26 @@ String? _extractAddress(dom.Document doc, String html) {
 }
 
 num? _extractZestimate(dom.Document doc, String html) {
-  // 1) Try Next.js JSON first
+  // 1) Try Next.js JSON first - including nested gdpClientCache
   final next = _parseNextData(doc);
-  final fromNext = _findZestimateInJson(next);
-  if (fromNext != null) return fromNext;
+  if (next != null) {
+    // First try the whole structure
+    final fromNext = _findZestimateInJson(next);
+    if (fromNext != null) return fromNext;
+
+    // Then try decoding gdpClientCache (double-encoded JSON)
+    final gdpCache = _dig<String>(next, [
+      'props',
+      'pageProps',
+      'componentProps',
+      'gdpClientCache'
+    ]);
+    if (gdpCache != null) {
+      final decoded = _safeDecode(gdpCache);
+      final fromCache = _findZestimateInJson(decoded);
+      if (fromCache != null) return fromCache;
+    }
+  }
 
   // 2) Try Zillow preloaded data blocks
   for (final json in _parseAllZillowPreloadJson(doc)) {
@@ -359,31 +375,34 @@ num? _findZestimateInJson(dynamic json) {
     if (candidate != null) return;
 
     if (node is Map<String, dynamic>) {
-      // Direct key
-      if (node.containsKey('zestimate')) {
-        final v = node['zestimate'];
-        if (v is num) {
-          candidate = v;
-          return;
-        } else if (v is Map) {
-          final amount = v['amount'] ?? v['value'];
-          if (amount is num) {
-            candidate = amount;
+      // Direct key - try 'zestimate' first, then 'price'
+      // Zillow sometimes stores zestimate as 'price' in __NEXT_DATA__
+      for (final key in ['zestimate', 'price']) {
+        if (node.containsKey(key)) {
+          final v = node[key];
+          if (v is num) {
+            candidate = v;
             return;
-          } else if (amount is String) {
-            final parsed = num.tryParse(
-              amount.replaceAll(RegExp(r'[^\d.]'), ''),
-            );
+          } else if (v is Map) {
+            final amount = v['amount'] ?? v['value'];
+            if (amount is num) {
+              candidate = amount;
+              return;
+            } else if (amount is String) {
+              final parsed = num.tryParse(
+                amount.replaceAll(RegExp(r'[^\d.]'), ''),
+              );
+              if (parsed != null) {
+                candidate = parsed;
+                return;
+              }
+            }
+          } else if (v is String) {
+            final parsed = num.tryParse(v.replaceAll(RegExp(r'[^\d.]'), ''));
             if (parsed != null) {
               candidate = parsed;
               return;
             }
-          }
-        } else if (v is String) {
-          final parsed = num.tryParse(v.replaceAll(RegExp(r'[^\d.]'), ''));
-          if (parsed != null) {
-            candidate = parsed;
-            return;
           }
         }
       }
