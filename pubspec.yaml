@@ -1,18 +1,14 @@
-name: zillow_scraper
-description: A starting point for Dart libraries or applications.
-version: 1.0.0
-# repository: https://github.com/my_org/my_repo
+name: zestimater
+description: A library for scraping Zillow Zestimates for a given address.
+version: 0.1.0
 
 environment:
-  sdk: ^3.9.2
+  sdk: ^3.9.0
 
-# Add regular dependencies here.
 dependencies:
-  http: ^1.5.0
   html: ^0.15.6
+  http: ^1.5.0
   intl: ^0.20.2
-  # path: ^1.9.0
 
 dev_dependencies:
-  lints: ^6.0.0
-  test: ^1.25.6
+  all_lint_rules_community: ^0.0.43

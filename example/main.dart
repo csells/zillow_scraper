@@ -1,7 +1,9 @@
+// ignore_for_file: avoid_print
+
 import 'dart:async';
 import 'dart:io';
 
-import 'package:zillow_scraper/zestimater.dart';
+import 'package:zestimater/zestimater.dart';
 
 Future<void> main(List<String> args) async {
   if (args.isEmpty) {

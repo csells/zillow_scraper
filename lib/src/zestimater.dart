@@ -1,30 +1,51 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 
+/// A class representing a Zestimate for a home.
+///
+/// [address] is the address of the home. [zestimate] is the Zestimate for the
+/// home. [homeDetailsUrl] is the URL of the home details page on Zillow.
 class Zestimate {
-  final String address;
-  final int zestimate;
-  final Uri homeDetailsUrl;
-
+  /// Creates a new [Zestimate] instance.
+  ///
+  /// [address] is the address of the home. [zestimate] is the Zestimate for the
+  /// home. [homeDetailsUrl] is the URL of the home details page on Zillow.
   Zestimate({
     required this.address,
     required this.zestimate,
     required this.homeDetailsUrl,
   });
 
-  // show currency in USD
+  /// The address of the home.
+  final String address;
+
+  /// The Zestimate for the home.
+  final int zestimate;
+
+  /// The URL of the home details page on Zillow.
+  final Uri homeDetailsUrl;
+
+  /// The Zestimate for the home formatted as a string in USD.
   String get zestimateFormatted =>
-      NumberFormat.currency(locale: 'en_US', symbol: '\$').format(zestimate);
+      NumberFormat.currency(locale: 'en_US', symbol: r'$').format(zestimate);
 }
 
+/// A class for getting Zestimates for homes.
 abstract class Zestimater {
+  /// Creates a new [Zestimater] instance.
   Zestimater._();
 
+  /// Gets the Zestimate for a home.
+  ///
+  /// [address] is the address of the home.
+  ///
+  /// Returns a [Zestimate] instance.
   static Future<Zestimate> getZestimate(String address) async {
     final url = await getHomeDetailsUrlFromAddress(address);
     final zestimate = await getHomeValueFromUrl(url);
@@ -35,6 +56,11 @@ abstract class Zestimater {
     );
   }
 
+  /// Gets the home details URL for a home.
+  ///
+  /// [address] is the address of the home.
+  ///
+  /// Returns a [Uri] instance.
   static Future<Uri> getHomeDetailsUrlFromAddress(String address) async {
     // 1️⃣  Slugify: replace spaces/punctuation with dashes.
     final slug = address
@@ -77,6 +103,11 @@ abstract class Zestimater {
     throw Exception('Failed to convert address to Zillow URL.');
   }
 
+  /// Gets the home value from a URL.
+  ///
+  /// [url] is the URL of the home details page on Zillow.
+  ///
+  /// Returns an [int] instance.
   static Future<int> getHomeValueFromUrl(Uri url) async {
     final html = await _fetchHtml(url);
     if (html.isEmpty) throw Exception('Fetched empty HTML.');
@@ -117,23 +148,23 @@ abstract class Zestimater {
     }
   }
 
-  static Map<String, String> _realisticHeaders() {
-    // You can rotate these if you like; using a current-ish mainstream UA helps.
-    // You can also override via env var: UA="..." dart run ...
-    final ua =
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/130.0.0.0 Safari/537.36';
+  static const List<String> _userAgents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15',
+    'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Mobile Safari/537.36',
+  ];
 
-    return {
-      'User-Agent': ua,
-      'Accept':
-          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Referer': 'https://www.google.com/',
-      'Connection': 'keep-alive',
-      // Avoid setting Sec-CH-UA headers from server code—they’re client hints. UA above is enough.
-    };
-  }
+  static Map<String, String> _realisticHeaders() => {
+    // Avoid setting Sec-CH-UA headers from server code—they’re client hints;
+    // Random [User-Agent] is enough and realistic referrer should be enough.
+    'User-Agent': _userAgents[Random().nextInt(_userAgents.length)],
+    'Accept':
+        'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://www.google.com/',
+    'Connection': 'keep-alive',
+  };
 
   static num? _extractZestimate(dom.Document doc, String html) {
     // 1) Try Next.js JSON first - including nested gdpClientCache
@@ -163,10 +194,8 @@ abstract class Zestimater {
       if (z != null) return z;
     }
 
-    // 3) As a last resort, regex scan the raw HTML
-    // Common forms:
-    //   "zestimate":1234567
-    //   "zestimate":{"amount":1234567 ...}
+    // 3) As a last resort, regex scan the raw HTML Common forms:
+    //    "zestimate":1234567 "zestimate":{"amount":1234567 ...}
     final r1 = RegExp(r'"zestimate"\s*:\s*([0-9]{4,}(?:\.\d+)?)');
     final m1 = r1.firstMatch(html);
     if (m1 != null) return num.tryParse(m1.group(1)!);
@@ -261,8 +290,9 @@ abstract class Zestimater {
 
   static Map<String, dynamic>? _safeDecode(String raw) {
     try {
-      // Some blobs are strings containing JSON-escaped JSON; decode twice if needed.
-      dynamic first = jsonDecode(raw);
+      // Some blobs are strings containing JSON-escaped JSON; decode twice if
+      // needed.
+      final dynamic first = jsonDecode(raw);
       if (first is String) {
         return jsonDecode(first) as Map<String, dynamic>;
       }
@@ -273,7 +303,7 @@ abstract class Zestimater {
         // Not expected but normalize
         return first.first as Map<String, dynamic>;
       }
-    } catch (e) {
+    } on Object catch (_) {
       // Try stripping comment wrappers if any left
       try {
         final cleaned = raw
@@ -283,10 +313,11 @@ abstract class Zestimater {
         dynamic decoded = jsonDecode(cleaned);
         if (decoded is String) decoded = jsonDecode(decoded);
         if (decoded is Map<String, dynamic>) return decoded;
-      } catch (e2) {
+      } on Object catch (e2) {
         throw Exception('Failed to decode JSON: $e2');
       }
     }
+
     throw Exception('Failed to decode JSON.');
   }
 
