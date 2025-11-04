@@ -1,11 +1,14 @@
 name: zestimater
 description: A library for scraping Zillow Zestimates for a given address.
 version: 0.1.0
+repository: https://github.com/csells/zestimater
+homepage: https://github.com/csells/zestimater
 
 environment:
   sdk: ^3.9.0
 
 dependencies:
+  browser_headers: ^0.1.0
   html: ^0.15.6
   http: ^1.5.0
   intl: ^0.20.2

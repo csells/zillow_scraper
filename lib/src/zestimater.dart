@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 
+import 'package:browser_headers/browser_headers.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
@@ -44,11 +44,16 @@ abstract class Zestimater {
   /// Gets the Zestimate for a home.
   ///
   /// [address] is the address of the home.
+  /// [homeDetailsUrl] is the URL of the home details page on Zillow. If not
+  /// provided, it will be fetched from the address.
   ///
   /// Returns a [Zestimate] instance.
-  static Future<Zestimate> getZestimate(String address) async {
-    final url = await getHomeDetailsUrlFromAddress(address);
-    final zestimate = await getHomeValueFromUrl(url);
+  static Future<Zestimate> getZestimate(
+    String address, {
+    Uri? homeDetailsUrl,
+  }) async {
+    final url = homeDetailsUrl ?? await getHomeDetailsUrlFromAddress(address);
+    final zestimate = await getHomeValueFromUrl(url, address: address);
     return Zestimate(
       address: address,
       zestimate: zestimate,
@@ -72,13 +77,7 @@ abstract class Zestimater {
     final searchUrl = 'https://www.zillow.com/homes/${slug}_rb/';
 
     // 2️⃣  Fetch the search page.
-    final headers = {
-      'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-          '(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-      'Accept-Language': 'en-US,en;q=0.9',
-    };
-
+    final headers = BrowserHeaders.generate(refererQuery: 'zillow $address');
     final resp = await http.get(Uri.parse(searchUrl), headers: headers);
 
     // 3️⃣  Follow redirect, if Zillow sends one.
@@ -108,8 +107,12 @@ abstract class Zestimater {
   /// [url] is the URL of the home details page on Zillow.
   ///
   /// Returns an [int] instance.
-  static Future<int> getHomeValueFromUrl(Uri url) async {
-    final html = await _fetchHtml(url);
+  static Future<int> getHomeValueFromUrl(
+    Uri url, {
+    required String address,
+  }) async {
+    final headers = BrowserHeaders.generate(refererQuery: 'zillow $address');
+    final html = await _fetchHomeDetailsHtml(url: url, headers: headers);
     if (html.isEmpty) throw Exception('Fetched empty HTML.');
 
     // Quick bot-block detection
@@ -129,8 +132,10 @@ abstract class Zestimater {
     return zestimate.toInt();
   }
 
-  static Future<String> _fetchHtml(Uri url) async {
-    final headers = _realisticHeaders();
+  static Future<String> _fetchHomeDetailsHtml({
+    required Uri url,
+    required Map<String, String> headers,
+  }) async {
     final client = http.Client();
     try {
       final resp = await client
@@ -147,24 +152,6 @@ abstract class Zestimater {
       client.close();
     }
   }
-
-  static const List<String> _userAgents = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15',
-    'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Mobile Safari/537.36',
-  ];
-
-  static Map<String, String> _realisticHeaders() => {
-    // Avoid setting Sec-CH-UA headers from server code—they’re client hints;
-    // Random [User-Agent] is enough and realistic referrer should be enough.
-    'User-Agent': _userAgents[Random().nextInt(_userAgents.length)],
-    'Accept':
-        'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Referer': 'https://www.google.com/',
-    'Connection': 'keep-alive',
-  };
 
   static num? _extractZestimate(dom.Document doc, String html) {
     // 1) Try Next.js JSON first - including nested gdpClientCache
